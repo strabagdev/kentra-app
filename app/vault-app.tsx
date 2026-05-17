@@ -352,6 +352,7 @@ export function VaultApp() {
       notes: credential.notes,
     });
     setIsAccessSheetOpen(true);
+    setIsSettingsOpen(false);
     setSheetMessage("");
     setMessage("");
   }
@@ -467,6 +468,14 @@ export function VaultApp() {
     setMessage(`${label} copiado al portapapeles.`);
   }
 
+  function closeSettings() {
+    setIsSettingsOpen(false);
+    setCategoryName("");
+    setEditingCategory(null);
+    setEditingCategoryName("");
+    setCategoryMessage("");
+  }
+
   function lockVault() {
     setActiveUser("");
     setCredentials([]);
@@ -488,34 +497,21 @@ export function VaultApp() {
   if (!activeUser) {
     return (
       <main className="min-h-screen bg-background text-foreground">
-        <section className="mx-auto flex min-h-screen w-full max-w-5xl items-center px-4 py-8">
-          <div className="grid w-full gap-8 lg:grid-cols-[1fr_380px] lg:items-center">
-            <div className="space-y-7">
-              <div>
-                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-foreground text-background">
-                  <LockIcon />
-                </div>
-                <p className="text-sm font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-                  Kentra Vault
-                </p>
-                <h1 className="mt-4 max-w-3xl text-4xl font-semibold leading-tight tracking-tight text-foreground sm:text-6xl">
-                  Tus accesos ordenados por usuario y categoría.
-                </h1>
+        <section className="mx-auto flex min-h-screen w-full max-w-md items-center px-4 py-8">
+          <div className="w-full">
+            <div className="mb-8 flex items-center justify-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-foreground text-background">
+                <LockIcon />
               </div>
-              <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-                Guarda tus credenciales en una bóveda cifrada, consulta rápido lo importante y organiza
-                cada acceso por categorías propias.
-              </p>
-              <div className="grid max-w-2xl gap-3 sm:grid-cols-3">
-                {["Cifrado local", "Categorías", "Copiado rápido"].map((item) => (
-                  <div key={item} className="rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-card-foreground shadow-sm">
-                    {item}
-                  </div>
-                ))}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Kentra
+                </p>
+                <h1 className="text-2xl font-semibold leading-tight text-foreground">Vault</h1>
               </div>
             </div>
 
-            <form onSubmit={handleAuth} className="rounded-xl border border-border bg-card p-6 shadow-sm">
+            <form onSubmit={handleAuth} className="rounded-xl border border-border bg-card p-5 shadow-sm sm:p-6">
               <div className="mb-6 grid grid-cols-2 rounded-lg border border-border bg-muted p-1">
                 <button
                   type="button"
@@ -539,6 +535,9 @@ export function VaultApp() {
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
                   className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   placeholder="tu-nombre"
                 />
               </label>
@@ -550,6 +549,7 @@ export function VaultApp() {
                   onChange={(event) => setMasterPassword(event.target.value)}
                   className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
                   type="password"
+                  autoComplete={mode === "create" ? "new-password" : "current-password"}
                   placeholder="mínimo 8 caracteres"
                 />
               </label>
@@ -587,22 +587,27 @@ export function VaultApp() {
                 setEditingId(null);
                 setForm(makeEmptyForm(categories[0]));
                 setIsAccessSheetOpen(true);
+                setIsSettingsOpen(false);
                 setSheetMessage("");
                 setMessage("");
               }}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground transition hover:opacity-90"
+              aria-label="Nuevo acceso"
+              title="Nuevo acceso"
             >
               <PlusIcon />
-              <span className="hidden sm:inline">Nuevo</span>
             </button>
             <button
               onClick={() => {
-                setIsSettingsOpen((current) => !current);
+                setIsSettingsOpen(true);
+                setIsAccessSheetOpen(false);
+                setEditingId(null);
+                setSheetMessage("");
                 setCategoryMessage("");
               }}
               className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              aria-label="Configuración"
-              title="Configuración"
+              aria-label="Catálogo"
+              title="Catálogo"
             >
               <SettingsIcon />
             </button>
@@ -624,6 +629,12 @@ export function VaultApp() {
           eyebrow={editingId ? "Editar acceso" : "Nuevo acceso"}
           title={editingId ? "Actualizar credencial" : "Guardar nueva credencial"}
           description="Registra el servicio, el nombre asociado a la cuenta y sus datos de ingreso."
+          onClose={() => {
+            setIsAccessSheetOpen(false);
+            setEditingId(null);
+            setForm(makeEmptyForm(categories[0]));
+            setSheetMessage("");
+          }}
         >
           <form onSubmit={handleSave} className="grid gap-4 px-5 py-5">
             {sheetMessage ? (
@@ -698,107 +709,113 @@ export function VaultApp() {
         </SheetPanel>
       ) : null}
 
-      <div className="mx-auto grid max-w-4xl gap-5 px-4 py-4 md:py-6">
-        <section className="space-y-5">
-          {isSettingsOpen ? (
-            <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                    Configuración
-                  </p>
-                  <h2 className="mt-2 text-lg font-semibold text-foreground">Categorías</h2>
-                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                    Administra las categorías disponibles para ordenar tus accesos.
-                  </p>
-                </div>
-              </div>
+      {isSettingsOpen ? (
+        <SheetPanel
+          titleId="catalog-sheet-title"
+          eyebrow="Catálogo"
+          title="Categorías"
+          description="Administra las categorías disponibles para ordenar tus accesos."
+          onClose={closeSettings}
+        >
+          <div className="grid gap-5 px-5 py-5">
+            <form onSubmit={handleCreateCategory} className="grid gap-3 sm:grid-cols-[1fr_auto]">
+              <input
+                value={categoryName}
+                onChange={(event) => setCategoryName(event.target.value)}
+                className="h-10 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+                placeholder="Nueva categoría"
+              />
+              <button disabled={busy} className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                Agregar
+              </button>
+            </form>
 
-              <form onSubmit={handleCreateCategory} className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
-                <input
-                  value={categoryName}
-                  onChange={(event) => setCategoryName(event.target.value)}
-                  className="h-10 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
-                  placeholder="Nueva categoría"
-                />
-                <button disabled={busy} className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
-                  Agregar
-                </button>
-              </form>
+            {categoryMessage ? (
+              <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                {categoryMessage}
+              </p>
+            ) : null}
 
-              {categoryMessage ? (
-                <p className="mt-4 rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
-                  {categoryMessage}
-                </p>
-              ) : null}
+            <div className="grid gap-2">
+              {categories.map((category) => {
+                const usageCount = credentials.filter((credential) => credential.category === category).length;
 
-              <div className="mt-5 grid gap-2">
-                {categories.map((category) => {
-                  const usageCount = credentials.filter((credential) => credential.category === category).length;
-
-                  return (
-                    <article key={category} className="rounded-md border border-border bg-background p-3">
-                      {editingCategory === category ? (
-                        <form onSubmit={handleUpdateCategory} className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
-                          <input
-                            value={editingCategoryName}
-                            onChange={(event) => setEditingCategoryName(event.target.value)}
-                            className="h-10 rounded-md border border-input bg-card px-3 text-base outline-none transition focus:border-ring"
-                          />
-                          <button disabled={busy} className="h-10 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
-                            Guardar
-                          </button>
+                return (
+                  <article key={category} className="rounded-md border border-border bg-background p-3">
+                    {editingCategory === category ? (
+                      <form onSubmit={handleUpdateCategory} className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                        <input
+                          value={editingCategoryName}
+                          onChange={(event) => setEditingCategoryName(event.target.value)}
+                          className="h-10 rounded-md border border-input bg-card px-3 text-base outline-none transition focus:border-ring"
+                        />
+                        <button disabled={busy} className="h-10 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                          Guardar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingCategory(null);
+                            setEditingCategoryName("");
+                            setCategoryMessage("");
+                          }}
+                          className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                        >
+                          Cancelar
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="font-semibold text-foreground">{category}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {usageCount === 1 ? "1 acceso asociado" : `${usageCount} accesos asociados`}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
                             onClick={() => {
-                              setEditingCategory(null);
-                              setEditingCategoryName("");
+                              setEditingCategory(category);
+                              setEditingCategoryName(category);
                               setCategoryMessage("");
                             }}
-                            className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                            className="h-9 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
                           >
-                            Cancelar
+                            Editar
                           </button>
-                        </form>
-                      ) : (
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="font-semibold text-foreground">{category}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {usageCount === 1 ? "1 acceso asociado" : `${usageCount} accesos asociados`}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingCategory(category);
-                                setEditingCategoryName(category);
-                                setCategoryMessage("");
-                              }}
-                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
-                            >
-                              Editar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void deleteCategory(category)}
-                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold text-destructive transition hover:bg-muted"
-                            >
-                              Eliminar
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void deleteCategory(category)}
+                            className="h-9 rounded-md border border-border px-3 text-sm font-semibold text-destructive transition hover:bg-muted"
+                          >
+                            Eliminar
+                          </button>
                         </div>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
 
-          <div className="flex gap-2">
-            <div className="relative flex-1">
+            <div className="sticky bottom-0 -mx-5 mt-2 flex justify-end border-t border-border bg-card/95 px-5 py-4 backdrop-blur">
+              <button
+                type="button"
+                onClick={closeSettings}
+                className="h-10 rounded-md border border-border px-4 text-sm font-semibold transition hover:bg-muted"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </SheetPanel>
+      ) : null}
+
+      <div className="mx-auto grid max-w-4xl gap-5 px-4 py-4 md:py-6">
+        <section className="min-w-0 space-y-5">
+          <div className="grid min-w-0 gap-3">
+            <div className="relative">
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
                 <SearchIcon />
               </span>
@@ -820,15 +837,24 @@ export function VaultApp() {
                 </button>
               ) : null}
             </div>
-            <select
-              value={selectedCategory}
-              onChange={(event) => setSelectedCategory(event.target.value)}
-              className="h-10 w-32 rounded-md border border-input bg-card px-3 text-sm outline-none transition focus:border-ring md:w-40"
-            >
+
+            <div className="flex flex-wrap gap-2" aria-label="Filtrar por categoría">
               {categoryOptions.map((category) => (
-                <option key={category}>{category}</option>
+                <button
+                  key={category}
+                  type="button"
+                  onClick={() => setSelectedCategory(category)}
+                  aria-pressed={selectedCategory === category}
+                  className={`h-9 rounded-full border px-3 text-sm font-medium transition ${
+                    selectedCategory === category
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {category}
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-3">
@@ -843,13 +869,13 @@ export function VaultApp() {
 
           {message ? <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">{message}</p> : null}
 
-          <div className="grid gap-3">
+          <div className="grid min-w-0 gap-3">
             {filteredCredentials.length ? (
               filteredCredentials.map((credential) => (
-                <article key={credential.id} className="group rounded-lg border border-border bg-card shadow-sm transition hover:border-muted-foreground/30">
-                  <div className="flex items-center gap-3 p-3 md:p-4">
+                <article key={credential.id} className="group min-w-0 rounded-lg border border-border bg-card shadow-sm transition hover:border-muted-foreground/30">
+                  <div className="flex items-center gap-2 p-3 md:gap-3 md:p-4">
                     <div
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-sm font-semibold text-white"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-sm font-semibold text-white sm:h-10 sm:w-10"
                       style={{ backgroundColor: getAvatarColor(credential.title) }}
                     >
                       {getInitial(credential.title)}
@@ -857,7 +883,7 @@ export function VaultApp() {
 
                     <div className="min-w-0 flex-1">
                       <div className="mb-0.5 flex min-w-0 items-center gap-2">
-                        <h3 className="truncate font-medium text-foreground">{credential.title}</h3>
+                        <h3 className="min-w-0 truncate font-medium text-foreground">{credential.title}</h3>
                         <span className="hidden shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground sm:inline-flex">
                           {credential.category}
                         </span>
@@ -865,7 +891,7 @@ export function VaultApp() {
                       <p className="truncate text-sm text-muted-foreground">{credential.username || credential.accountName}</p>
                     </div>
 
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex shrink-0 items-center justify-end gap-0.5 sm:gap-1">
                       {credential.username ? (
                         <IconButton
                           label="Copiar usuario"
@@ -939,6 +965,7 @@ export function VaultApp() {
                       setEditingId(null);
                       setForm(makeEmptyForm(categories[0]));
                       setIsAccessSheetOpen(true);
+                      setIsSettingsOpen(false);
                       setSheetMessage("");
                     }}
                     className="mt-4 inline-flex h-10 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground"
@@ -1009,7 +1036,7 @@ function IconButton({
       aria-label={label}
       title={title}
       onClick={onClick}
-      className={`inline-flex shrink-0 items-center justify-center rounded-md transition ${compact ? "h-9 w-9" : "h-11 w-11"} ${tone}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md transition ${compact ? "h-8 w-8 sm:h-9 sm:w-9" : "h-11 w-11"} ${tone}`}
     >
       {children}
     </button>
@@ -1177,12 +1204,14 @@ function SheetPanel({
   eyebrow,
   title,
   description,
+  onClose,
   children,
 }: {
   titleId: string;
   eyebrow: string;
   title: string;
   description: string;
+  onClose: () => void;
   children: ReactNode;
 }) {
   return (
@@ -1199,13 +1228,22 @@ function SheetPanel({
         aria-labelledby={titleId}
       >
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border bg-card/95 px-5 py-5 backdrop-blur">
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{eyebrow}</p>
             <h2 id={titleId} className="mt-3 text-2xl font-semibold text-foreground">
               {title}
             </h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            aria-label="Cerrar"
+            title="Cerrar"
+          >
+            <XIcon />
+          </button>
         </div>
 
         {children}
