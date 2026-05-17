@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useMemo, useState } from "react";
 
 type Credential = {
   id: string;
@@ -16,6 +16,7 @@ type Credential = {
 
 type VaultPayload = {
   credentials: Credential[];
+  categories?: string[];
 };
 
 type VaultEnvelope = {
@@ -32,15 +33,38 @@ const defaultCategories = ["Trabajo", "Personal", "Bancos", "Clientes"];
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const emptyForm = {
-  title: "",
-  accountName: "",
-  username: "",
-  password: "",
-  category: "Trabajo",
-  url: "",
-  notes: "",
-};
+function makeEmptyForm(category = defaultCategories[0]) {
+  return {
+    title: "",
+    accountName: "",
+    username: "",
+    password: "",
+    category,
+    url: "",
+    notes: "",
+  };
+}
+
+function cleanCategory(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function uniqueCategories(values: string[]) {
+  return Array.from(new Set(values.map(cleanCategory).filter(Boolean)));
+}
+
+function hydratePayload(payload: VaultPayload) {
+  const credentials = payload.credentials ?? [];
+  const categories = uniqueCategories([
+    ...(payload.categories?.length ? payload.categories : defaultCategories),
+    ...credentials.map((credential) => credential.category),
+  ]);
+
+  return {
+    credentials,
+    categories: categories.length ? categories : defaultCategories,
+  };
+}
 
 function normalizeUser(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "-");
@@ -155,6 +179,24 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
+function getInitial(value: string) {
+  return value.trim().charAt(0).toUpperCase() || "K";
+}
+
+function getAvatarColor(value: string) {
+  const colors = [
+    "#2563eb",
+    "#059669",
+    "#d97706",
+    "#e11d48",
+    "#7c3aed",
+    "#0891b2",
+    "#4f46e5",
+    "#db2777",
+  ];
+  return colors[(value.charCodeAt(0) || 0) % colors.length];
+}
+
 export function VaultApp() {
   const [mode, setMode] = useState<AuthMode>("unlock");
   const [username, setUsername] = useState("");
@@ -162,18 +204,23 @@ export function VaultApp() {
   const [activeUser, setActiveUser] = useState("");
   const [salt, setSalt] = useState("");
   const [credentials, setCredentials] = useState<Credential[]>([]);
-  const [form, setForm] = useState(emptyForm);
+  const [categories, setCategories] = useState<string[]>(defaultCategories);
+  const [form, setForm] = useState(makeEmptyForm());
   const [selectedCategory, setSelectedCategory] = useState("Todas");
   const [query, setQuery] = useState("");
   const [visibleId, setVisibleId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isAccessSheetOpen, setIsAccessSheetOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [categoryName, setCategoryName] = useState("");
+  const [editingCategory, setEditingCategory] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [categoryMessage, setCategoryMessage] = useState("");
   const [message, setMessage] = useState("");
+  const [sheetMessage, setSheetMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const categories = useMemo(() => {
-    const custom = credentials.map((credential) => credential.category).filter(Boolean);
-    return ["Todas", ...Array.from(new Set([...defaultCategories, ...custom]))];
-  }, [credentials]);
+  const categoryOptions = useMemo(() => ["Todas", ...categories], [categories]);
 
   const filteredCredentials = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -189,16 +236,17 @@ export function VaultApp() {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [credentials, query, selectedCategory]);
 
-  async function persist(nextCredentials: Credential[]) {
+  async function persist(nextCredentials: Credential[], nextCategories = categories) {
     const envelope = await encryptVault(
       normalizeUser(activeUser),
       masterPassword,
-      { credentials: nextCredentials },
+      { credentials: nextCredentials, categories: nextCategories },
       salt,
     );
     await saveRemoteVault(activeUser, envelope);
     setSalt(envelope.salt);
     setCredentials(nextCredentials);
+    setCategories(nextCategories);
   }
 
   async function handleAuth(event: FormEvent<HTMLFormElement>) {
@@ -219,11 +267,16 @@ export function VaultApp() {
           setMessage("Ese usuario ya tiene una bóveda. Cambia a ingresar para abrirla.");
           return;
         }
-        const envelope = await encryptVault(cleanUser, masterPassword, { credentials: [] });
+        const envelope = await encryptVault(cleanUser, masterPassword, {
+          credentials: [],
+          categories: defaultCategories,
+        });
         await saveRemoteVault(cleanUser, envelope);
         setActiveUser(cleanUser);
         setSalt(envelope.salt);
         setCredentials([]);
+        setCategories(defaultCategories);
+        setForm(makeEmptyForm(defaultCategories[0]));
         setMessage("Bóveda creada. Ya puedes guardar tus accesos.");
         return;
       }
@@ -233,10 +286,12 @@ export function VaultApp() {
         return;
       }
 
-      const payload = await decryptVault(vault, masterPassword);
+      const payload = hydratePayload(await decryptVault(vault, masterPassword));
       setActiveUser(vault.username);
       setSalt(vault.salt);
-      setCredentials(payload.credentials ?? []);
+      setCredentials(payload.credentials);
+      setCategories(payload.categories);
+      setForm(makeEmptyForm(payload.categories[0]));
       setMessage("Bóveda desbloqueada.");
     } catch {
       setMessage("No pude abrir la bóveda. Revisa el usuario, la contraseña maestra o la conexión a la base de datos.");
@@ -248,7 +303,7 @@ export function VaultApp() {
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
-    setMessage("");
+    setSheetMessage("");
 
     try {
       const now = new Date().toISOString();
@@ -265,7 +320,7 @@ export function VaultApp() {
       };
 
       if (!nextCredential.title || !nextCredential.accountName || !nextCredential.password) {
-        setMessage("Completa servicio, nombre asociado y contraseña.");
+        setSheetMessage("Completa servicio, nombre asociado y contraseña.");
         return;
       }
 
@@ -274,11 +329,12 @@ export function VaultApp() {
         : [nextCredential, ...credentials];
 
       await persist(nextCredentials);
-      setForm(emptyForm);
+      setForm(makeEmptyForm(categories[0]));
       setEditingId(null);
+      setIsAccessSheetOpen(false);
       setMessage(editingId ? "Credencial actualizada." : "Credencial guardada.");
     } catch {
-      setMessage("No pude guardar en la base de datos. Revisa la conexión e intenta nuevamente.");
+      setSheetMessage("No pude guardar en la base de datos. Revisa la conexión e intenta nuevamente.");
     } finally {
       setBusy(false);
     }
@@ -295,6 +351,8 @@ export function VaultApp() {
       url: credential.url,
       notes: credential.notes,
     });
+    setIsAccessSheetOpen(true);
+    setSheetMessage("");
     setMessage("");
   }
 
@@ -308,6 +366,102 @@ export function VaultApp() {
     }
   }
 
+  async function handleCreateCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCategoryMessage("");
+
+    const nextCategory = cleanCategory(categoryName);
+    if (!nextCategory) {
+      setCategoryMessage("Ingresa un nombre para la categoría.");
+      return;
+    }
+
+    if (categories.some((category) => category.toLowerCase() === nextCategory.toLowerCase())) {
+      setCategoryMessage("Esa categoría ya existe.");
+      return;
+    }
+
+    try {
+      const nextCategories = [...categories, nextCategory];
+      await persist(credentials, nextCategories);
+      setCategoryName("");
+      setCategoryMessage("Categoría creada.");
+    } catch {
+      setCategoryMessage("No pude guardar la categoría en la base de datos.");
+    }
+  }
+
+  async function handleUpdateCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCategoryMessage("");
+
+    if (!editingCategory) return;
+
+    const nextCategory = cleanCategory(editingCategoryName);
+    if (!nextCategory) {
+      setCategoryMessage("Ingresa un nombre para la categoría.");
+      return;
+    }
+
+    const duplicate = categories.some(
+      (category) =>
+        category.toLowerCase() === nextCategory.toLowerCase() &&
+        category.toLowerCase() !== editingCategory.toLowerCase(),
+    );
+    if (duplicate) {
+      setCategoryMessage("Esa categoría ya existe.");
+      return;
+    }
+
+    try {
+      const nextCategories = categories.map((category) =>
+        category === editingCategory ? nextCategory : category,
+      );
+      const nextCredentials = credentials.map((credential) =>
+        credential.category === editingCategory
+          ? { ...credential, category: nextCategory, updatedAt: new Date().toISOString() }
+          : credential,
+      );
+
+      await persist(nextCredentials, nextCategories);
+      if (selectedCategory === editingCategory) setSelectedCategory(nextCategory);
+      if (form.category === editingCategory) setForm({ ...form, category: nextCategory });
+      setEditingCategory(null);
+      setEditingCategoryName("");
+      setCategoryMessage("Categoría actualizada.");
+    } catch {
+      setCategoryMessage("No pude actualizar la categoría en la base de datos.");
+    }
+  }
+
+  async function deleteCategory(categoryToDelete: string) {
+    setCategoryMessage("");
+
+    if (categories.length <= 1) {
+      setCategoryMessage("Debe existir al menos una categoría.");
+      return;
+    }
+
+    if (credentials.some((credential) => credential.category === categoryToDelete)) {
+      setCategoryMessage("No puedes eliminar una categoría con accesos asociados. Reasigna esos accesos primero.");
+      return;
+    }
+
+    try {
+      const nextCategories = categories.filter((category) => category !== categoryToDelete);
+      await persist(credentials, nextCategories);
+      if (selectedCategory === categoryToDelete) setSelectedCategory("Todas");
+      if (form.category === categoryToDelete) setForm({ ...form, category: nextCategories[0] });
+      if (editingCategory === categoryToDelete) {
+        setEditingCategory(null);
+        setEditingCategoryName("");
+      }
+      setCategoryMessage("Categoría eliminada.");
+    } catch {
+      setCategoryMessage("No pude eliminar la categoría en la base de datos.");
+    }
+  }
+
   async function copyValue(value: string, label: string) {
     await navigator.clipboard.writeText(value);
     setMessage(`${label} copiado al portapapeles.`);
@@ -316,74 +470,85 @@ export function VaultApp() {
   function lockVault() {
     setActiveUser("");
     setCredentials([]);
+    setCategories(defaultCategories);
     setMasterPassword("");
-    setForm(emptyForm);
+    setForm(makeEmptyForm(categories[0]));
     setEditingId(null);
     setVisibleId(null);
+    setIsAccessSheetOpen(false);
+    setIsSettingsOpen(false);
+    setCategoryName("");
+    setEditingCategory(null);
+    setEditingCategoryName("");
+    setCategoryMessage("");
+    setSheetMessage("");
     setMessage("Bóveda bloqueada.");
   }
 
   if (!activeUser) {
     return (
-      <main className="min-h-screen bg-[#f5f3ee] text-[#1e2528]">
-        <section className="mx-auto flex min-h-screen w-full max-w-6xl items-center px-5 py-8">
-          <div className="grid w-full gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
-            <div className="space-y-8">
+      <main className="min-h-screen bg-background text-foreground">
+        <section className="mx-auto flex min-h-screen w-full max-w-5xl items-center px-4 py-8">
+          <div className="grid w-full gap-8 lg:grid-cols-[1fr_380px] lg:items-center">
+            <div className="space-y-7">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.28em] text-[#c05f3d]">
+                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-foreground text-background">
+                  <LockIcon />
+                </div>
+                <p className="text-sm font-semibold uppercase tracking-[0.24em] text-muted-foreground">
                   Kentra Vault
                 </p>
-                <h1 className="mt-4 max-w-3xl text-5xl font-semibold leading-tight text-[#172023] sm:text-7xl">
+                <h1 className="mt-4 max-w-3xl text-4xl font-semibold leading-tight tracking-tight text-foreground sm:text-6xl">
                   Tus accesos ordenados por usuario y categoría.
                 </h1>
               </div>
-              <p className="max-w-2xl text-lg leading-8 text-[#596266]">
-                Guarda el nombre asociado a cada cuenta, su usuario y contraseña. La bóveda se cifra con
-                tu contraseña maestra antes de quedar almacenada en este navegador.
+              <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
+                Guarda tus credenciales en una bóveda cifrada, consulta rápido lo importante y organiza
+                cada acceso por categorías propias.
               </p>
               <div className="grid max-w-2xl gap-3 sm:grid-cols-3">
                 {["Cifrado local", "Categorías", "Copiado rápido"].map((item) => (
-                  <div key={item} className="border border-[#ded8cc] bg-white/70 px-4 py-3 text-sm font-medium">
+                  <div key={item} className="rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-card-foreground shadow-sm">
                     {item}
                   </div>
                 ))}
               </div>
             </div>
 
-            <form onSubmit={handleAuth} className="border border-[#d9d2c4] bg-white p-6 shadow-[0_24px_80px_rgba(39,32,21,0.12)]">
-              <div className="mb-6 grid grid-cols-2 border border-[#d9d2c4] bg-[#f5f3ee] p-1">
+            <form onSubmit={handleAuth} className="rounded-xl border border-border bg-card p-6 shadow-sm">
+              <div className="mb-6 grid grid-cols-2 rounded-lg border border-border bg-muted p-1">
                 <button
                   type="button"
                   onClick={() => setMode("unlock")}
-                  className={`h-11 text-sm font-semibold ${mode === "unlock" ? "bg-[#1e2528] text-white" : "text-[#596266]"}`}
+                  className={`h-10 rounded-md text-sm font-semibold transition ${mode === "unlock" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"}`}
                 >
                   Ingresar
                 </button>
                 <button
                   type="button"
                   onClick={() => setMode("create")}
-                  className={`h-11 text-sm font-semibold ${mode === "create" ? "bg-[#1e2528] text-white" : "text-[#596266]"}`}
+                  className={`h-10 rounded-md text-sm font-semibold transition ${mode === "create" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"}`}
                 >
                   Crear
                 </button>
               </div>
 
-              <label className="block text-sm font-semibold text-[#384246]">
+              <label className="block text-sm font-medium text-foreground">
                 Usuario
                 <input
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
-                  className="mt-2 h-12 w-full border border-[#d9d2c4] bg-white px-3 text-base outline-none focus:border-[#c05f3d]"
+                  className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
                   placeholder="tu-nombre"
                 />
               </label>
 
-              <label className="mt-4 block text-sm font-semibold text-[#384246]">
+              <label className="mt-4 block text-sm font-medium text-foreground">
                 Contraseña maestra
                 <input
                   value={masterPassword}
                   onChange={(event) => setMasterPassword(event.target.value)}
-                  className="mt-2 h-12 w-full border border-[#d9d2c4] bg-white px-3 text-base outline-none focus:border-[#c05f3d]"
+                  className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
                   type="password"
                   placeholder="mínimo 8 caracteres"
                 />
@@ -391,11 +556,11 @@ export function VaultApp() {
 
               <button
                 disabled={busy}
-                className="mt-6 h-12 w-full bg-[#c05f3d] px-4 text-sm font-bold uppercase tracking-[0.16em] text-white transition hover:bg-[#a94f31] disabled:opacity-60"
+                className="mt-6 h-11 w-full rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
               >
                 {busy ? "Procesando" : mode === "create" ? "Crear bóveda" : "Desbloquear"}
               </button>
-              {message ? <p className="mt-4 text-sm text-[#7b4a33]">{message}</p> : null}
+              {message ? <p className="mt-4 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">{message}</p> : null}
             </form>
           </div>
         </section>
@@ -404,165 +569,384 @@ export function VaultApp() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f5f3ee] text-[#1e2528]">
-      <header className="border-b border-[#ddd6c9] bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#c05f3d]">Kentra Vault</p>
-            <h1 className="text-2xl font-semibold">Bóveda de {activeUser}</h1>
+    <main className="min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/85 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
+              <LockIcon />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Kentra Vault</p>
+              <h1 className="truncate text-sm font-semibold leading-tight text-foreground">{activeUser}</h1>
+            </div>
           </div>
-          <button onClick={lockVault} className="h-10 border border-[#1e2528] px-4 text-sm font-semibold">
-            Bloquear
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => {
+                setEditingId(null);
+                setForm(makeEmptyForm(categories[0]));
+                setIsAccessSheetOpen(true);
+                setSheetMessage("");
+                setMessage("");
+              }}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+            >
+              <PlusIcon />
+              <span className="hidden sm:inline">Nuevo</span>
+            </button>
+            <button
+              onClick={() => {
+                setIsSettingsOpen((current) => !current);
+                setCategoryMessage("");
+              }}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label="Configuración"
+              title="Configuración"
+            >
+              <SettingsIcon />
+            </button>
+            <button
+              onClick={lockVault}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label="Bloquear bóveda"
+              title="Bloquear bóveda"
+            >
+              <LockIcon />
+            </button>
+          </div>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-5 py-6 lg:grid-cols-[380px_1fr]">
-        <section className="border border-[#d9d2c4] bg-white p-5">
-          <h2 className="text-lg font-semibold">{editingId ? "Editar acceso" : "Nuevo acceso"}</h2>
-          <form onSubmit={handleSave} className="mt-5 space-y-4">
+      {isAccessSheetOpen ? (
+        <SheetPanel
+          titleId="access-sheet-title"
+          eyebrow={editingId ? "Editar acceso" : "Nuevo acceso"}
+          title={editingId ? "Actualizar credencial" : "Guardar nueva credencial"}
+          description="Registra el servicio, el nombre asociado a la cuenta y sus datos de ingreso."
+        >
+          <form onSubmit={handleSave} className="grid gap-4 px-5 py-5">
+            {sheetMessage ? (
+              <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                {sheetMessage}
+              </p>
+            ) : null}
             <InputField label="Servicio" value={form.title} onChange={(value) => setForm({ ...form, title: value })} placeholder="Gmail, Railway, Banco" />
             <InputField label="Nombre asociado" value={form.accountName} onChange={(value) => setForm({ ...form, accountName: value })} placeholder="Cuenta empresa, Juan Pérez" />
             <InputField label="Usuario o correo" value={form.username} onChange={(value) => setForm({ ...form, username: value })} placeholder="usuario@correo.com" />
-            <label className="block text-sm font-semibold text-[#384246]">
+            <label className="block text-sm font-medium text-foreground">
               Contraseña
               <div className="mt-2 flex gap-2">
                 <input
                   value={form.password}
                   onChange={(event) => setForm({ ...form, password: event.target.value })}
-                  className="h-11 min-w-0 flex-1 border border-[#d9d2c4] px-3 text-base outline-none focus:border-[#c05f3d]"
+                  className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
                   type="text"
                   placeholder="Contraseña"
                 />
                 <button
                   type="button"
                   onClick={() => setForm({ ...form, password: makePassword() })}
-                  className="h-11 border border-[#d9d2c4] px-3 text-sm font-semibold"
+                  className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
                 >
                   Generar
                 </button>
               </div>
             </label>
-            <InputField label="Categoría" value={form.category} onChange={(value) => setForm({ ...form, category: value })} placeholder="Trabajo" />
+            <label className="block text-sm font-medium text-foreground">
+              Categoría
+              <select
+                value={form.category}
+                onChange={(event) => setForm({ ...form, category: event.target.value })}
+                className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+              >
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
             <InputField label="URL" value={form.url} onChange={(value) => setForm({ ...form, url: value })} placeholder="https://..." />
-            <label className="block text-sm font-semibold text-[#384246]">
+            <label className="block text-sm font-medium text-foreground">
               Notas
               <textarea
                 value={form.notes}
                 onChange={(event) => setForm({ ...form, notes: event.target.value })}
-                className="mt-2 min-h-24 w-full border border-[#d9d2c4] px-3 py-2 text-base outline-none focus:border-[#c05f3d]"
+                className="mt-2 min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-base outline-none transition focus:border-ring"
                 placeholder="Detalle útil para reconocer esta cuenta"
               />
             </label>
-            <div className="flex gap-2">
-              <button disabled={busy} className="h-11 flex-1 bg-[#1e2528] px-4 text-sm font-bold text-white disabled:opacity-60">
+            <div className="sticky bottom-0 -mx-5 mt-2 flex gap-2 border-t border-border bg-card/95 px-5 py-4 backdrop-blur">
+              <button disabled={busy} className="h-10 flex-1 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
                 {editingId ? "Actualizar" : "Guardar"}
               </button>
-              {editingId ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAccessSheetOpen(false);
+                  setEditingId(null);
+                  setForm(makeEmptyForm(categories[0]));
+                  setSheetMessage("");
+                }}
+                className="h-10 rounded-md border border-border px-4 text-sm font-semibold transition hover:bg-muted"
+              >
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </SheetPanel>
+      ) : null}
+
+      <div className="mx-auto grid max-w-4xl gap-5 px-4 py-4 md:py-6">
+        <section className="space-y-5">
+          {isSettingsOpen ? (
+            <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Configuración
+                  </p>
+                  <h2 className="mt-2 text-lg font-semibold text-foreground">Categorías</h2>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    Administra las categorías disponibles para ordenar tus accesos.
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleCreateCategory} className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
+                <input
+                  value={categoryName}
+                  onChange={(event) => setCategoryName(event.target.value)}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+                  placeholder="Nueva categoría"
+                />
+                <button disabled={busy} className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                  Agregar
+                </button>
+              </form>
+
+              {categoryMessage ? (
+                <p className="mt-4 rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                  {categoryMessage}
+                </p>
+              ) : null}
+
+              <div className="mt-5 grid gap-2">
+                {categories.map((category) => {
+                  const usageCount = credentials.filter((credential) => credential.category === category).length;
+
+                  return (
+                    <article key={category} className="rounded-md border border-border bg-background p-3">
+                      {editingCategory === category ? (
+                        <form onSubmit={handleUpdateCategory} className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                          <input
+                            value={editingCategoryName}
+                            onChange={(event) => setEditingCategoryName(event.target.value)}
+                            className="h-10 rounded-md border border-input bg-card px-3 text-base outline-none transition focus:border-ring"
+                          />
+                          <button disabled={busy} className="h-10 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                            Guardar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingCategory(null);
+                              setEditingCategoryName("");
+                              setCategoryMessage("");
+                            }}
+                            className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                          >
+                            Cancelar
+                          </button>
+                        </form>
+                      ) : (
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="font-semibold text-foreground">{category}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {usageCount === 1 ? "1 acceso asociado" : `${usageCount} accesos asociados`}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCategory(category);
+                                setEditingCategoryName(category);
+                                setCategoryMessage("");
+                              }}
+                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteCategory(category)}
+                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold text-destructive transition hover:bg-muted"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+                <SearchIcon />
+              </span>
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="h-10 w-full rounded-md border border-input bg-card px-9 text-base outline-none transition focus:border-ring"
+                placeholder="Buscar..."
+              />
+              {query ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    setEditingId(null);
-                    setForm(emptyForm);
-                  }}
-                  className="h-11 border border-[#d9d2c4] px-4 text-sm font-semibold"
+                  onClick={() => setQuery("")}
+                  className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  aria-label="Limpiar búsqueda"
+                  title="Limpiar búsqueda"
                 >
-                  Cancelar
+                  <XIcon />
                 </button>
               ) : null}
             </div>
-          </form>
-        </section>
-
-        <section className="space-y-5">
-          <div className="grid gap-3 border border-[#d9d2c4] bg-white p-4 md:grid-cols-[1fr_220px]">
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="h-11 border border-[#d9d2c4] px-3 text-base outline-none focus:border-[#c05f3d]"
-              placeholder="Buscar por servicio, usuario o nombre"
-            />
             <select
               value={selectedCategory}
               onChange={(event) => setSelectedCategory(event.target.value)}
-              className="h-11 border border-[#d9d2c4] bg-white px-3 text-base outline-none focus:border-[#c05f3d]"
+              className="h-10 w-32 rounded-md border border-input bg-card px-3 text-sm outline-none transition focus:border-ring md:w-40"
             >
-              {categories.map((category) => (
+              {categoryOptions.map((category) => (
                 <option key={category}>{category}</option>
               ))}
             </select>
           </div>
 
-          {message ? <p className="border border-[#ead1c2] bg-[#fff8f2] px-4 py-3 text-sm text-[#7b4a33]">{message}</p> : null}
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              {filteredCredentials.length} {filteredCredentials.length === 1 ? "credencial" : "credenciales"}
+            </p>
+            <div className="flex items-center gap-1.5 text-xs text-emerald-600">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              Bóveda desbloqueada
+            </div>
+          </div>
+
+          {message ? <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">{message}</p> : null}
 
           <div className="grid gap-3">
             {filteredCredentials.length ? (
               filteredCredentials.map((credential) => (
-                <article key={credential.id} className="border border-[#d9d2c4] bg-white p-4">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-xl font-semibold">{credential.title}</h3>
-                        <span className="bg-[#eef0e7] px-2 py-1 text-xs font-semibold text-[#596266]">
+                <article key={credential.id} className="group rounded-lg border border-border bg-card shadow-sm transition hover:border-muted-foreground/30">
+                  <div className="flex items-center gap-3 p-3 md:p-4">
+                    <div
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-sm font-semibold text-white"
+                      style={{ backgroundColor: getAvatarColor(credential.title) }}
+                    >
+                      {getInitial(credential.title)}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-0.5 flex min-w-0 items-center gap-2">
+                        <h3 className="truncate font-medium text-foreground">{credential.title}</h3>
+                        <span className="hidden shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground sm:inline-flex">
                           {credential.category}
                         </span>
                       </div>
-                      <p className="mt-1 text-sm text-[#596266]">{credential.accountName}</p>
+                      <p className="truncate text-sm text-muted-foreground">{credential.username || credential.accountName}</p>
                     </div>
-                    <p className="text-xs text-[#7b8588]">Actualizado {formatDate(credential.updatedAt)}</p>
-                  </div>
 
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <div className="border border-[#eee7db] p-3">
-                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#7b8588]">Usuario</p>
-                      <div className="mt-2 flex items-center gap-2">
-                        <p className="min-w-0 flex-1 truncate font-medium">{credential.username || "Sin usuario"}</p>
-                        {credential.username ? (
-                          <button onClick={() => copyValue(credential.username, "Usuario")} className="text-sm font-semibold text-[#c05f3d]">
-                            Copiar
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="border border-[#eee7db] p-3">
-                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#7b8588]">Contraseña</p>
-                      <div className="mt-2 flex items-center gap-2">
-                        <p className="min-w-0 flex-1 truncate font-mono">
-                          {visibleId === credential.id ? credential.password : "••••••••••••"}
-                        </p>
-                        <button
-                          onClick={() => setVisibleId(visibleId === credential.id ? null : credential.id)}
-                          className="text-sm font-semibold text-[#596266]"
+                    <div className="flex shrink-0 items-center gap-1">
+                      {credential.username ? (
+                        <IconButton
+                          label="Copiar usuario"
+                          title="Copiar usuario"
+                          compact
+                          onClick={() => copyValue(credential.username, "Usuario")}
                         >
-                          {visibleId === credential.id ? "Ocultar" : "Ver"}
-                        </button>
-                        <button onClick={() => copyValue(credential.password, "Contraseña")} className="text-sm font-semibold text-[#c05f3d]">
-                          Copiar
-                        </button>
-                      </div>
+                          <CopyIcon />
+                        </IconButton>
+                      ) : null}
+                      <IconButton
+                        label={visibleId === credential.id ? "Ocultar contraseña" : "Ver contraseña"}
+                        title={visibleId === credential.id ? "Ocultar contraseña" : "Ver contraseña"}
+                        compact
+                        onClick={() => setVisibleId(visibleId === credential.id ? null : credential.id)}
+                      >
+                        {visibleId === credential.id ? <EyeOffIcon /> : <EyeIcon />}
+                      </IconButton>
+                      <IconButton
+                        label="Copiar contraseña"
+                        title="Copiar contraseña"
+                        compact
+                        onClick={() => copyValue(credential.password, "Contraseña")}
+                      >
+                        <CopyIcon />
+                      </IconButton>
+                      <IconButton label="Editar acceso" title="Editar acceso" compact onClick={() => startEdit(credential)}>
+                        <PencilIcon />
+                      </IconButton>
+                      <IconButton
+                        label="Eliminar acceso"
+                        title="Eliminar acceso"
+                        compact
+                        danger
+                        onClick={() => deleteCredential(credential.id)}
+                      >
+                        <TrashIcon />
+                      </IconButton>
                     </div>
                   </div>
 
-                  {credential.url || credential.notes ? (
-                    <div className="mt-3 text-sm leading-6 text-[#596266]">
-                      {credential.url ? <p className="truncate">{credential.url}</p> : null}
-                      {credential.notes ? <p>{credential.notes}</p> : null}
+                  {visibleId === credential.id ? (
+                    <div className="px-3 pb-3 md:px-4 md:pb-4">
+                      <div className="rounded-md bg-muted px-3 py-2 font-mono text-sm break-all text-foreground">
+                        {credential.password}
+                      </div>
+                      <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        {credential.accountName ? <p>{credential.accountName}</p> : null}
+                        {credential.url ? <p className="truncate">{credential.url}</p> : null}
+                        {credential.notes ? <p>{credential.notes}</p> : null}
+                        <p>Actualizado: {formatDate(credential.updatedAt)}</p>
+                      </div>
                     </div>
                   ) : null}
-
-                  <div className="mt-4 flex gap-2">
-                    <button onClick={() => startEdit(credential)} className="h-9 border border-[#d9d2c4] px-3 text-sm font-semibold">
-                      Editar
-                    </button>
-                    <button onClick={() => deleteCredential(credential.id)} className="h-9 border border-[#ead1c2] px-3 text-sm font-semibold text-[#a94f31]">
-                      Eliminar
-                    </button>
-                  </div>
                 </article>
               ))
             ) : (
-              <div className="border border-dashed border-[#cfc7b8] bg-white/70 p-8 text-center text-[#596266]">
-                No hay accesos para este filtro.
+              <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center text-muted-foreground">
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <LockIcon />
+                </div>
+                <h3 className="font-medium text-foreground">{query || selectedCategory !== "Todas" ? "Sin resultados" : "Bóveda vacía"}</h3>
+                <p className="mt-1 text-sm">
+                  {query || selectedCategory !== "Todas"
+                    ? "No se encontraron credenciales con esos filtros."
+                    : "Agrega tu primera credencial para comenzar."}
+                </p>
+                {!credentials.length ? (
+                  <button
+                    onClick={() => {
+                      setEditingId(null);
+                      setForm(makeEmptyForm(categories[0]));
+                      setIsAccessSheetOpen(true);
+                      setSheetMessage("");
+                    }}
+                    className="mt-4 inline-flex h-10 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground"
+                  >
+                    <PlusIcon />
+                    Crear primer acceso
+                  </button>
+                ) : null}
               </div>
             )}
           </div>
@@ -584,14 +968,248 @@ function InputField({
   placeholder: string;
 }) {
   return (
-    <label className="block text-sm font-semibold text-[#384246]">
+    <label className="block text-sm font-medium text-foreground">
       {label}
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-2 h-11 w-full border border-[#d9d2c4] px-3 text-base outline-none focus:border-[#c05f3d]"
+        className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
         placeholder={placeholder}
       />
     </label>
+  );
+}
+
+function IconButton({
+  label,
+  title,
+  accent = false,
+  compact = false,
+  danger = false,
+  children,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  accent?: boolean;
+  compact?: boolean;
+  danger?: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  const tone = danger
+    ? "text-destructive hover:bg-destructive/10"
+    : accent
+      ? "text-accent hover:bg-accent/10"
+      : "text-muted-foreground hover:bg-muted hover:text-foreground";
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={title}
+      onClick={onClick}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md transition ${compact ? "h-9 w-9" : "h-11 w-11"} ${tone}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M8 8.5C8 7.12 9.12 6 10.5 6H18C19.1 6 20 6.9 20 8V18C20 19.1 19.1 20 18 20H10.5C9.12 20 8 18.88 8 17.5V8.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M5 15.5V5.5C5 4.67 5.67 4 6.5 4H15"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M3 12C5.4 7.9 8.4 6 12 6C15.6 6 18.6 7.9 21 12C18.6 16.1 15.6 18 12 18C8.4 18 5.4 16.1 3 12Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M12 14.8C13.55 14.8 14.8 13.55 14.8 12C14.8 10.45 13.55 9.2 12 9.2C10.45 9.2 9.2 10.45 9.2 12C9.2 13.55 10.45 14.8 12 14.8Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+      <path d="M4 4L20 20" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path
+        d="M10.2 6.25C10.78 6.08 11.38 6 12 6C15.6 6 18.6 7.9 21 12C20.22 13.33 19.38 14.43 18.47 15.31"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M14.1 14.42C13.55 14.82 12.83 15 12 15C10.34 15 9 13.66 9 12C9 11.2 9.24 10.51 9.72 9.92"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M7.53 8.09C5.86 8.94 4.35 10.24 3 12C5.4 16.1 8.4 18 12 18C13.15 18 14.23 17.81 15.25 17.4"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M7 10V8C7 5.24 9.24 3 12 3C14.76 3 17 5.24 17 8V10"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M6.5 10H17.5C18.6 10 19.5 10.9 19.5 12V19C19.5 20.1 18.6 21 17.5 21H6.5C5.4 21 4.5 20.1 4.5 19V12C4.5 10.9 5.4 10 6.5 10Z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path d="M12 5V19M5 12H19" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M12 15.5A3.5 3.5 0 1 0 12 8.5A3.5 3.5 0 0 0 12 15.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M19.4 15A1.65 1.65 0 0 0 19.73 16.82L19.8 16.89A2 2 0 1 1 16.97 19.72L16.9 19.65A1.65 1.65 0 0 0 15.08 19.32A1.65 1.65 0 0 0 14.08 20.83V21A2 2 0 1 1 10.08 21V20.9A1.65 1.65 0 0 0 9 19.39A1.65 1.65 0 0 0 7.18 19.72L7.11 19.79A2 2 0 1 1 4.28 16.96L4.35 16.89A1.65 1.65 0 0 0 4.68 15.07A1.65 1.65 0 0 0 3.17 14H3A2 2 0 1 1 3 10H3.1A1.65 1.65 0 0 0 4.61 8.92A1.65 1.65 0 0 0 4.28 7.1L4.21 7.03A2 2 0 1 1 7.04 4.2L7.11 4.27A1.65 1.65 0 0 0 8.93 4.6H9A1.65 1.65 0 0 0 10 3.09V3A2 2 0 1 1 14 3V3.1A1.65 1.65 0 0 0 15 4.61A1.65 1.65 0 0 0 16.82 4.28L16.89 4.21A2 2 0 1 1 19.72 7.04L19.65 7.11A1.65 1.65 0 0 0 19.32 8.93V9A1.65 1.65 0 0 0 20.83 10H21A2 2 0 1 1 21 14H20.9A1.65 1.65 0 0 0 19.4 15Z"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M10.8 18.2A7.4 7.4 0 1 0 10.8 3.4A7.4 7.4 0 0 0 10.8 18.2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path d="M16.1 16.1L21 21" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path d="M6 6L18 18M18 6L6 18" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 20H8L18.5 9.5C19.6 8.4 19.6 6.6 18.5 5.5C17.4 4.4 15.6 4.4 14.5 5.5L4 16V20Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <path d="M4 7H20" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="M10 11V17M14 11V17" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path
+        d="M6.5 7L7.4 19C7.48 20.12 8.42 21 9.55 21H14.45C15.58 21 16.52 20.12 16.6 19L17.5 7"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path d="M9 7V5C9 3.9 9.9 3 11 3H13C14.1 3 15 3.9 15 5V7" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function SheetPanel({
+  titleId,
+  eyebrow,
+  title,
+  description,
+  children,
+}: {
+  titleId: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="kentra-sheet-backdrop"
+      data-state="open"
+      role="presentation"
+    >
+      <aside
+        className="kentra-sheet-card"
+        data-state="open"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border bg-card/95 px-5 py-5 backdrop-blur">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{eyebrow}</p>
+            <h2 id={titleId} className="mt-3 text-2xl font-semibold text-foreground">
+              {title}
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>
+          </div>
+        </div>
+
+        {children}
+      </aside>
+    </div>
   );
 }
