@@ -46,8 +46,26 @@ function normalizeUser(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "-");
 }
 
-function vaultKey(username: string) {
-  return `kentra:vault:${normalizeUser(username)}`;
+async function loadRemoteVault(username: string) {
+  const response = await fetch(`/api/vaults?username=${encodeURIComponent(username)}`);
+
+  if (!response.ok) {
+    throw new Error("Unable to load vault.");
+  }
+
+  return (await response.json()) as { vault: VaultEnvelope | null };
+}
+
+async function saveRemoteVault(username: string, envelope: VaultEnvelope) {
+  const response = await fetch("/api/vaults", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, envelope }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Unable to save vault.");
+  }
 }
 
 function toBase64(bytes: Uint8Array) {
@@ -173,12 +191,12 @@ export function VaultApp() {
 
   async function persist(nextCredentials: Credential[]) {
     const envelope = await encryptVault(
-      activeUser,
+      normalizeUser(activeUser),
       masterPassword,
       { credentials: nextCredentials },
       salt,
     );
-    localStorage.setItem(vaultKey(activeUser), JSON.stringify(envelope));
+    await saveRemoteVault(activeUser, envelope);
     setSalt(envelope.salt);
     setCredentials(nextCredentials);
   }
@@ -189,20 +207,20 @@ export function VaultApp() {
     setMessage("");
 
     try {
-      const cleanUser = username.trim();
+      const cleanUser = normalizeUser(username);
       if (!cleanUser || masterPassword.length < 8) {
         setMessage("Ingresa un usuario y una contraseña maestra de al menos 8 caracteres.");
         return;
       }
 
-      const stored = localStorage.getItem(vaultKey(cleanUser));
+      const { vault } = await loadRemoteVault(cleanUser);
       if (mode === "create") {
-        if (stored) {
+        if (vault) {
           setMessage("Ese usuario ya tiene una bóveda. Cambia a ingresar para abrirla.");
           return;
         }
         const envelope = await encryptVault(cleanUser, masterPassword, { credentials: [] });
-        localStorage.setItem(vaultKey(cleanUser), JSON.stringify(envelope));
+        await saveRemoteVault(cleanUser, envelope);
         setActiveUser(cleanUser);
         setSalt(envelope.salt);
         setCredentials([]);
@@ -210,19 +228,18 @@ export function VaultApp() {
         return;
       }
 
-      if (!stored) {
+      if (!vault) {
         setMessage("No encontré una bóveda para ese usuario. Puedes crearla ahora.");
         return;
       }
 
-      const envelope = JSON.parse(stored) as VaultEnvelope;
-      const payload = await decryptVault(envelope, masterPassword);
-      setActiveUser(envelope.username);
-      setSalt(envelope.salt);
+      const payload = await decryptVault(vault, masterPassword);
+      setActiveUser(vault.username);
+      setSalt(vault.salt);
       setCredentials(payload.credentials ?? []);
       setMessage("Bóveda desbloqueada.");
     } catch {
-      setMessage("No pude abrir la bóveda. Revisa el usuario o la contraseña maestra.");
+      setMessage("No pude abrir la bóveda. Revisa el usuario, la contraseña maestra o la conexión a la base de datos.");
     } finally {
       setBusy(false);
     }
@@ -260,6 +277,8 @@ export function VaultApp() {
       setForm(emptyForm);
       setEditingId(null);
       setMessage(editingId ? "Credencial actualizada." : "Credencial guardada.");
+    } catch {
+      setMessage("No pude guardar en la base de datos. Revisa la conexión e intenta nuevamente.");
     } finally {
       setBusy(false);
     }
@@ -280,9 +299,13 @@ export function VaultApp() {
   }
 
   async function deleteCredential(id: string) {
-    const nextCredentials = credentials.filter((credential) => credential.id !== id);
-    await persist(nextCredentials);
-    setMessage("Credencial eliminada.");
+    try {
+      const nextCredentials = credentials.filter((credential) => credential.id !== id);
+      await persist(nextCredentials);
+      setMessage("Credencial eliminada.");
+    } catch {
+      setMessage("No pude eliminar en la base de datos. Revisa la conexión e intenta nuevamente.");
+    }
   }
 
   async function copyValue(value: string, label: string) {
