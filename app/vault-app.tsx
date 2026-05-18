@@ -17,6 +17,7 @@ type Credential = {
 type VaultPayload = {
   credentials: Credential[];
   categories?: string[];
+  services?: string[];
 };
 
 type VaultEnvelope = {
@@ -30,12 +31,13 @@ type VaultEnvelope = {
 type AuthMode = "unlock" | "create";
 
 const defaultCategories = ["Trabajo", "Personal", "Bancos", "Clientes"];
+const defaultServices = ["Correo", "Banco", "Hosting", "SaaS", "Otro"];
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function makeEmptyForm(category = defaultCategories[0]) {
+function makeEmptyForm(category = defaultCategories[0], service = defaultServices[0]) {
   return {
-    title: "",
+    title: service,
     accountName: "",
     username: "",
     password: "",
@@ -53,16 +55,25 @@ function uniqueCategories(values: string[]) {
   return Array.from(new Set(values.map(cleanCategory).filter(Boolean)));
 }
 
+function uniqueServices(values: string[]) {
+  return Array.from(new Set(values.map(cleanCategory).filter(Boolean)));
+}
+
 function hydratePayload(payload: VaultPayload) {
   const credentials = payload.credentials ?? [];
   const categories = uniqueCategories([
     ...(payload.categories?.length ? payload.categories : defaultCategories),
     ...credentials.map((credential) => credential.category),
   ]);
+  const services = uniqueServices([
+    ...(payload.services?.length ? payload.services : defaultServices),
+    ...credentials.map((credential) => credential.title),
+  ]);
 
   return {
     credentials,
     categories: categories.length ? categories : defaultCategories,
+    services: services.length ? services : defaultServices,
   };
 }
 
@@ -205,6 +216,7 @@ export function VaultApp() {
   const [salt, setSalt] = useState("");
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [categories, setCategories] = useState<string[]>(defaultCategories);
+  const [services, setServices] = useState<string[]>(defaultServices);
   const [form, setForm] = useState(makeEmptyForm());
   const [selectedCategory, setSelectedCategory] = useState("Todas");
   const [query, setQuery] = useState("");
@@ -215,6 +227,9 @@ export function VaultApp() {
   const [categoryName, setCategoryName] = useState("");
   const [editingCategory, setEditingCategory] = useState<string | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [serviceName, setServiceName] = useState("");
+  const [editingService, setEditingService] = useState<string | null>(null);
+  const [editingServiceName, setEditingServiceName] = useState("");
   const [categoryMessage, setCategoryMessage] = useState("");
   const [message, setMessage] = useState("");
   const [sheetMessage, setSheetMessage] = useState("");
@@ -236,17 +251,22 @@ export function VaultApp() {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [credentials, query, selectedCategory]);
 
-  async function persist(nextCredentials: Credential[], nextCategories = categories) {
+  async function persist(
+    nextCredentials: Credential[],
+    nextCategories = categories,
+    nextServices = services,
+  ) {
     const envelope = await encryptVault(
       normalizeUser(activeUser),
       masterPassword,
-      { credentials: nextCredentials, categories: nextCategories },
+      { credentials: nextCredentials, categories: nextCategories, services: nextServices },
       salt,
     );
     await saveRemoteVault(activeUser, envelope);
     setSalt(envelope.salt);
     setCredentials(nextCredentials);
     setCategories(nextCategories);
+    setServices(nextServices);
   }
 
   async function handleAuth(event: FormEvent<HTMLFormElement>) {
@@ -270,13 +290,15 @@ export function VaultApp() {
         const envelope = await encryptVault(cleanUser, masterPassword, {
           credentials: [],
           categories: defaultCategories,
+          services: defaultServices,
         });
         await saveRemoteVault(cleanUser, envelope);
         setActiveUser(cleanUser);
         setSalt(envelope.salt);
         setCredentials([]);
         setCategories(defaultCategories);
-        setForm(makeEmptyForm(defaultCategories[0]));
+        setServices(defaultServices);
+        setForm(makeEmptyForm(defaultCategories[0], defaultServices[0]));
         setMessage("Bóveda creada. Ya puedes guardar tus accesos.");
         return;
       }
@@ -291,8 +313,9 @@ export function VaultApp() {
       setSalt(vault.salt);
       setCredentials(payload.credentials);
       setCategories(payload.categories);
-      setForm(makeEmptyForm(payload.categories[0]));
-      setMessage("Bóveda desbloqueada.");
+      setServices(payload.services);
+      setForm(makeEmptyForm(payload.categories[0], payload.services[0]));
+      setMessage("");
     } catch {
       setMessage("No pude abrir la bóveda. Revisa el usuario, la contraseña maestra o la conexión a la base de datos.");
     } finally {
@@ -329,7 +352,7 @@ export function VaultApp() {
         : [nextCredential, ...credentials];
 
       await persist(nextCredentials);
-      setForm(makeEmptyForm(categories[0]));
+      setForm(makeEmptyForm(categories[0], services[0]));
       setEditingId(null);
       setIsAccessSheetOpen(false);
       setMessage(editingId ? "Credencial actualizada." : "Credencial guardada.");
@@ -364,6 +387,100 @@ export function VaultApp() {
       setMessage("Credencial eliminada.");
     } catch {
       setMessage("No pude eliminar en la base de datos. Revisa la conexión e intenta nuevamente.");
+    }
+  }
+
+  async function handleCreateService(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCategoryMessage("");
+
+    const nextService = cleanCategory(serviceName);
+    if (!nextService) {
+      setCategoryMessage("Ingresa un nombre para el servicio.");
+      return;
+    }
+
+    if (services.some((service) => service.toLowerCase() === nextService.toLowerCase())) {
+      setCategoryMessage("Ese servicio ya existe.");
+      return;
+    }
+
+    try {
+      const nextServices = [...services, nextService];
+      await persist(credentials, categories, nextServices);
+      setServiceName("");
+      setCategoryMessage("Servicio creado.");
+    } catch {
+      setCategoryMessage("No pude guardar el servicio en la base de datos.");
+    }
+  }
+
+  async function handleUpdateService(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCategoryMessage("");
+
+    if (!editingService) return;
+
+    const nextService = cleanCategory(editingServiceName);
+    if (!nextService) {
+      setCategoryMessage("Ingresa un nombre para el servicio.");
+      return;
+    }
+
+    const duplicate = services.some(
+      (service) =>
+        service.toLowerCase() === nextService.toLowerCase() &&
+        service.toLowerCase() !== editingService.toLowerCase(),
+    );
+    if (duplicate) {
+      setCategoryMessage("Ese servicio ya existe.");
+      return;
+    }
+
+    try {
+      const nextServices = services.map((service) =>
+        service === editingService ? nextService : service,
+      );
+      const nextCredentials = credentials.map((credential) =>
+        credential.title === editingService
+          ? { ...credential, title: nextService, updatedAt: new Date().toISOString() }
+          : credential,
+      );
+
+      await persist(nextCredentials, categories, nextServices);
+      if (form.title === editingService) setForm({ ...form, title: nextService });
+      setEditingService(null);
+      setEditingServiceName("");
+      setCategoryMessage("Servicio actualizado.");
+    } catch {
+      setCategoryMessage("No pude actualizar el servicio en la base de datos.");
+    }
+  }
+
+  async function deleteService(serviceToDelete: string) {
+    setCategoryMessage("");
+
+    if (services.length <= 1) {
+      setCategoryMessage("Debe existir al menos un servicio.");
+      return;
+    }
+
+    if (credentials.some((credential) => credential.title === serviceToDelete)) {
+      setCategoryMessage("No puedes eliminar un servicio con accesos asociados. Reasigna esos accesos primero.");
+      return;
+    }
+
+    try {
+      const nextServices = services.filter((service) => service !== serviceToDelete);
+      await persist(credentials, categories, nextServices);
+      if (form.title === serviceToDelete) setForm({ ...form, title: nextServices[0] });
+      if (editingService === serviceToDelete) {
+        setEditingService(null);
+        setEditingServiceName("");
+      }
+      setCategoryMessage("Servicio eliminado.");
+    } catch {
+      setCategoryMessage("No pude eliminar el servicio en la base de datos.");
     }
   }
 
@@ -470,6 +587,9 @@ export function VaultApp() {
 
   function closeSettings() {
     setIsSettingsOpen(false);
+    setServiceName("");
+    setEditingService(null);
+    setEditingServiceName("");
     setCategoryName("");
     setEditingCategory(null);
     setEditingCategoryName("");
@@ -480,12 +600,16 @@ export function VaultApp() {
     setActiveUser("");
     setCredentials([]);
     setCategories(defaultCategories);
+    setServices(defaultServices);
     setMasterPassword("");
-    setForm(makeEmptyForm(categories[0]));
+    setForm(makeEmptyForm(defaultCategories[0], defaultServices[0]));
     setEditingId(null);
     setVisibleId(null);
     setIsAccessSheetOpen(false);
     setIsSettingsOpen(false);
+    setServiceName("");
+    setEditingService(null);
+    setEditingServiceName("");
     setCategoryName("");
     setEditingCategory(null);
     setEditingCategoryName("");
@@ -560,7 +684,11 @@ export function VaultApp() {
               >
                 {busy ? "Procesando" : mode === "create" ? "Crear bóveda" : "Desbloquear"}
               </button>
-              {message ? <p className="mt-4 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">{message}</p> : null}
+              {message ? (
+                <DismissibleMessage className="mt-4" onDismiss={() => setMessage("")}>
+                  {message}
+                </DismissibleMessage>
+              ) : null}
             </form>
           </div>
         </section>
@@ -585,7 +713,7 @@ export function VaultApp() {
             <button
               onClick={() => {
                 setEditingId(null);
-                setForm(makeEmptyForm(categories[0]));
+                setForm(makeEmptyForm(categories[0], services[0]));
                 setIsAccessSheetOpen(true);
                 setIsSettingsOpen(false);
                 setSheetMessage("");
@@ -632,17 +760,30 @@ export function VaultApp() {
           onClose={() => {
             setIsAccessSheetOpen(false);
             setEditingId(null);
-            setForm(makeEmptyForm(categories[0]));
+            setForm(makeEmptyForm(categories[0], services[0]));
             setSheetMessage("");
           }}
         >
           <form onSubmit={handleSave} className="grid gap-4 px-5 py-5">
             {sheetMessage ? (
-              <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+              <DismissibleMessage onDismiss={() => setSheetMessage("")}>
                 {sheetMessage}
-              </p>
+              </DismissibleMessage>
             ) : null}
-            <InputField label="Servicio" value={form.title} onChange={(value) => setForm({ ...form, title: value })} placeholder="Gmail, Railway, Banco" />
+            <label className="block text-sm font-medium text-foreground">
+              Servicio
+              <select
+                value={form.title}
+                onChange={(event) => setForm({ ...form, title: event.target.value })}
+                className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+              >
+                {services.map((service) => (
+                  <option key={service} value={service}>
+                    {service}
+                  </option>
+                ))}
+              </select>
+            </label>
             <InputField label="Nombre asociado" value={form.accountName} onChange={(value) => setForm({ ...form, accountName: value })} placeholder="Cuenta empresa, Juan Pérez" />
             <InputField label="Usuario o correo" value={form.username} onChange={(value) => setForm({ ...form, username: value })} placeholder="usuario@correo.com" />
             <label className="block text-sm font-medium text-foreground">
@@ -692,12 +833,27 @@ export function VaultApp() {
               <button disabled={busy} className="h-10 flex-1 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
                 {editingId ? "Actualizar" : "Guardar"}
               </button>
+              {editingId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void deleteCredential(editingId);
+                    setIsAccessSheetOpen(false);
+                    setEditingId(null);
+                    setForm(makeEmptyForm(categories[0], services[0]));
+                    setSheetMessage("");
+                  }}
+                  className="h-10 rounded-md border border-border px-4 text-sm font-semibold text-destructive transition hover:bg-muted"
+                >
+                  Eliminar
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {
                   setIsAccessSheetOpen(false);
                   setEditingId(null);
-                  setForm(makeEmptyForm(categories[0]));
+                  setForm(makeEmptyForm(categories[0], services[0]));
                   setSheetMessage("");
                 }}
                 className="h-10 rounded-md border border-border px-4 text-sm font-semibold transition hover:bg-muted"
@@ -713,91 +869,182 @@ export function VaultApp() {
         <SheetPanel
           titleId="catalog-sheet-title"
           eyebrow="Catálogo"
-          title="Categorías"
-          description="Administra las categorías disponibles para ordenar tus accesos."
+          title="Servicios y categorías"
+          description="Administra los servicios seleccionables y las categorías para ordenar tus accesos."
           onClose={closeSettings}
         >
           <div className="grid gap-5 px-5 py-5">
-            <form onSubmit={handleCreateCategory} className="grid gap-3 sm:grid-cols-[1fr_auto]">
-              <input
-                value={categoryName}
-                onChange={(event) => setCategoryName(event.target.value)}
-                className="h-10 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
-                placeholder="Nueva categoría"
-              />
-              <button disabled={busy} className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
-                Agregar
-              </button>
-            </form>
+            <section className="grid gap-3">
+              <div>
+                <h3 className="font-semibold text-foreground">Servicios</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Estos servicios aparecen en el desplegable al crear o editar accesos.
+                </p>
+              </div>
+              <form onSubmit={handleCreateService} className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                <input
+                  value={serviceName}
+                  onChange={(event) => setServiceName(event.target.value)}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+                  placeholder="Nuevo servicio"
+                />
+                <button disabled={busy} className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                  Agregar
+                </button>
+              </form>
 
-            {categoryMessage ? (
-              <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
-                {categoryMessage}
-              </p>
-            ) : null}
+              <div className="grid gap-2">
+                {services.map((service) => {
+                  const usageCount = credentials.filter((credential) => credential.title === service).length;
 
-            <div className="grid gap-2">
-              {categories.map((category) => {
-                const usageCount = credentials.filter((credential) => credential.category === category).length;
-
-                return (
-                  <article key={category} className="rounded-md border border-border bg-background p-3">
-                    {editingCategory === category ? (
-                      <form onSubmit={handleUpdateCategory} className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
-                        <input
-                          value={editingCategoryName}
-                          onChange={(event) => setEditingCategoryName(event.target.value)}
-                          className="h-10 rounded-md border border-input bg-card px-3 text-base outline-none transition focus:border-ring"
-                        />
-                        <button disabled={busy} className="h-10 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
-                          Guardar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingCategory(null);
-                            setEditingCategoryName("");
-                            setCategoryMessage("");
-                          }}
-                          className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
-                        >
-                          Cancelar
-                        </button>
-                      </form>
-                    ) : (
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <p className="font-semibold text-foreground">{category}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {usageCount === 1 ? "1 acceso asociado" : `${usageCount} accesos asociados`}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
+                  return (
+                    <article key={service} className="rounded-md border border-border bg-background p-3">
+                      {editingService === service ? (
+                        <form onSubmit={handleUpdateService} className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                          <input
+                            value={editingServiceName}
+                            onChange={(event) => setEditingServiceName(event.target.value)}
+                            className="h-10 rounded-md border border-input bg-card px-3 text-base outline-none transition focus:border-ring"
+                          />
+                          <button disabled={busy} className="h-10 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                            Guardar
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
-                              setEditingCategory(category);
-                              setEditingCategoryName(category);
+                              setEditingService(null);
+                              setEditingServiceName("");
                               setCategoryMessage("");
                             }}
-                            className="h-9 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                            className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
                           >
-                            Editar
+                            Cancelar
+                          </button>
+                        </form>
+                      ) : (
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="font-semibold text-foreground">{service}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {usageCount === 1 ? "1 acceso asociado" : `${usageCount} accesos asociados`}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingService(service);
+                                setEditingServiceName(service);
+                                setCategoryMessage("");
+                              }}
+                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteService(service)}
+                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold text-destructive transition hover:bg-muted"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+
+            {categoryMessage ? (
+              <DismissibleMessage onDismiss={() => setCategoryMessage("")}>
+                {categoryMessage}
+              </DismissibleMessage>
+            ) : null}
+
+            <section className="grid gap-3">
+              <div>
+                <h3 className="font-semibold text-foreground">Categorías</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Las categorías funcionan como filtros rápidos debajo del buscador.
+                </p>
+              </div>
+              <form onSubmit={handleCreateCategory} className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                <input
+                  value={categoryName}
+                  onChange={(event) => setCategoryName(event.target.value)}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-base outline-none transition focus:border-ring"
+                  placeholder="Nueva categoría"
+                />
+                <button disabled={busy} className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                  Agregar
+                </button>
+              </form>
+
+              <div className="grid gap-2">
+                {categories.map((category) => {
+                  const usageCount = credentials.filter((credential) => credential.category === category).length;
+
+                  return (
+                    <article key={category} className="rounded-md border border-border bg-background p-3">
+                      {editingCategory === category ? (
+                        <form onSubmit={handleUpdateCategory} className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                          <input
+                            value={editingCategoryName}
+                            onChange={(event) => setEditingCategoryName(event.target.value)}
+                            className="h-10 rounded-md border border-input bg-card px-3 text-base outline-none transition focus:border-ring"
+                          />
+                          <button disabled={busy} className="h-10 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                            Guardar
                           </button>
                           <button
                             type="button"
-                            onClick={() => void deleteCategory(category)}
-                            className="h-9 rounded-md border border-border px-3 text-sm font-semibold text-destructive transition hover:bg-muted"
+                            onClick={() => {
+                              setEditingCategory(null);
+                              setEditingCategoryName("");
+                              setCategoryMessage("");
+                            }}
+                            className="h-10 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
                           >
-                            Eliminar
+                            Cancelar
                           </button>
+                        </form>
+                      ) : (
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="font-semibold text-foreground">{category}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {usageCount === 1 ? "1 acceso asociado" : `${usageCount} accesos asociados`}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCategory(category);
+                                setEditingCategoryName(category);
+                                setCategoryMessage("");
+                              }}
+                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold transition hover:bg-muted"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteCategory(category)}
+                              className="h-9 rounded-md border border-border px-3 text-sm font-semibold text-destructive transition hover:bg-muted"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
 
             <div className="sticky bottom-0 -mx-5 mt-2 flex justify-end border-t border-border bg-card/95 px-5 py-4 backdrop-blur">
               <button
@@ -838,14 +1085,14 @@ export function VaultApp() {
               ) : null}
             </div>
 
-            <div className="flex flex-wrap gap-2" aria-label="Filtrar por categoría">
+            <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0" aria-label="Filtrar por categoría">
               {categoryOptions.map((category) => (
                 <button
                   key={category}
                   type="button"
                   onClick={() => setSelectedCategory(category)}
                   aria-pressed={selectedCategory === category}
-                  className={`h-9 rounded-full border px-3 text-sm font-medium transition ${
+                  className={`h-9 shrink-0 rounded-full border px-3 text-sm font-medium transition ${
                     selectedCategory === category
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -867,7 +1114,11 @@ export function VaultApp() {
             </div>
           </div>
 
-          {message ? <p className="rounded-md border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">{message}</p> : null}
+          {message ? (
+            <DismissibleMessage onDismiss={() => setMessage("")}>
+              {message}
+            </DismissibleMessage>
+          ) : null}
 
           <div className="grid min-w-0 gap-3">
             {filteredCredentials.length ? (
@@ -884,65 +1135,89 @@ export function VaultApp() {
                     <div className="min-w-0 flex-1">
                       <div className="mb-0.5 flex min-w-0 items-center gap-2">
                         <h3 className="min-w-0 truncate font-medium text-foreground">{credential.title}</h3>
-                        <span className="hidden shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground sm:inline-flex">
+                        <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                           {credential.category}
                         </span>
                       </div>
-                      <p className="truncate text-sm text-muted-foreground">{credential.username || credential.accountName}</p>
+                      <p className="truncate text-sm text-muted-foreground">{credential.accountName}</p>
                     </div>
 
                     <div className="flex shrink-0 items-center justify-end gap-0.5 sm:gap-1">
-                      {credential.username ? (
-                        <IconButton
-                          label="Copiar usuario"
-                          title="Copiar usuario"
-                          compact
-                          onClick={() => copyValue(credential.username, "Usuario")}
-                        >
-                          <CopyIcon />
-                        </IconButton>
-                      ) : null}
                       <IconButton
-                        label={visibleId === credential.id ? "Ocultar contraseña" : "Ver contraseña"}
-                        title={visibleId === credential.id ? "Ocultar contraseña" : "Ver contraseña"}
+                        label={visibleId === credential.id ? "Ocultar credenciales" : "Ver credenciales"}
+                        title={visibleId === credential.id ? "Ocultar credenciales" : "Ver credenciales"}
                         compact
+                        emphasis
                         onClick={() => setVisibleId(visibleId === credential.id ? null : credential.id)}
                       >
                         {visibleId === credential.id ? <EyeOffIcon /> : <EyeIcon />}
-                      </IconButton>
-                      <IconButton
-                        label="Copiar contraseña"
-                        title="Copiar contraseña"
-                        compact
-                        onClick={() => copyValue(credential.password, "Contraseña")}
-                      >
-                        <CopyIcon />
-                      </IconButton>
-                      <IconButton label="Editar acceso" title="Editar acceso" compact onClick={() => startEdit(credential)}>
-                        <PencilIcon />
-                      </IconButton>
-                      <IconButton
-                        label="Eliminar acceso"
-                        title="Eliminar acceso"
-                        compact
-                        danger
-                        onClick={() => deleteCredential(credential.id)}
-                      >
-                        <TrashIcon />
                       </IconButton>
                     </div>
                   </div>
 
                   {visibleId === credential.id ? (
                     <div className="px-3 pb-3 md:px-4 md:pb-4">
-                      <div className="rounded-md bg-muted px-3 py-2 font-mono text-sm break-all text-foreground">
-                        {credential.password}
+                      <div className="grid gap-2 rounded-md border border-border bg-muted p-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                          Credenciales
+                        </p>
+                        <div className="grid gap-1 sm:grid-cols-[1fr_auto] sm:items-center">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                              Usuario/correo
+                            </p>
+                            <p className="mt-1 truncate font-mono text-sm text-foreground">
+                              {credential.username || "Sin usuario"}
+                            </p>
+                          </div>
+                          {credential.username ? (
+                            <button
+                              type="button"
+                              onClick={() => copyValue(credential.username, "Usuario")}
+                              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-semibold transition hover:bg-background"
+                            >
+                              <CopyIcon />
+                              Copiar
+                            </button>
+                          ) : null}
+                        </div>
+
+                        <div className="grid gap-1 border-t border-border pt-2 sm:grid-cols-[1fr_auto] sm:items-center">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                              Contraseña
+                            </p>
+                            <p className="mt-1 break-all font-mono text-sm text-foreground">
+                              {credential.password}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => copyValue(credential.password, "Contraseña")}
+                            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-semibold transition hover:bg-background"
+                          >
+                            <CopyIcon />
+                            Copiar
+                          </button>
+                        </div>
                       </div>
-                      <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                        {credential.accountName ? <p>{credential.accountName}</p> : null}
-                        {credential.url ? <p className="truncate">{credential.url}</p> : null}
-                        {credential.notes ? <p>{credential.notes}</p> : null}
-                        <p>Actualizado: {formatDate(credential.updatedAt)}</p>
+                      <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                        <div className="min-w-0 space-y-1">
+                          {credential.url ? <p className="truncate">{credential.url}</p> : null}
+                          {credential.notes ? <p>{credential.notes}</p> : null}
+                          <p>Actualizado: {formatDate(credential.updatedAt)}</p>
+                        </div>
+                        <div className="shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => startEdit(credential)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                            aria-label="Editar acceso"
+                            title="Editar acceso"
+                          >
+                            <PencilIcon />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -963,7 +1238,7 @@ export function VaultApp() {
                   <button
                     onClick={() => {
                       setEditingId(null);
-                      setForm(makeEmptyForm(categories[0]));
+                      setForm(makeEmptyForm(categories[0], services[0]));
                       setIsAccessSheetOpen(true);
                       setIsSettingsOpen(false);
                       setSheetMessage("");
@@ -1007,11 +1282,39 @@ function InputField({
   );
 }
 
+function DismissibleMessage({
+  children,
+  className = "",
+  onDismiss,
+}: {
+  children: ReactNode;
+  className?: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className={`flex items-start justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground ${className}`}
+    >
+      <p className="min-w-0 leading-6">{children}</p>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition hover:bg-card hover:text-foreground"
+        aria-label="Cerrar mensaje"
+        title="Cerrar mensaje"
+      >
+        <XIcon />
+      </button>
+    </div>
+  );
+}
+
 function IconButton({
   label,
   title,
   accent = false,
   compact = false,
+  emphasis = false,
   danger = false,
   children,
   onClick,
@@ -1020,6 +1323,7 @@ function IconButton({
   title: string;
   accent?: boolean;
   compact?: boolean;
+  emphasis?: boolean;
   danger?: boolean;
   children: ReactNode;
   onClick: () => void;
@@ -1036,7 +1340,9 @@ function IconButton({
       aria-label={label}
       title={title}
       onClick={onClick}
-      className={`inline-flex shrink-0 items-center justify-center rounded-md transition ${compact ? "h-8 w-8 sm:h-9 sm:w-9" : "h-11 w-11"} ${tone}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md transition ${
+        emphasis ? "h-9 w-9 sm:h-10 sm:w-10" : compact ? "h-8 w-8 sm:h-9 sm:w-9" : "h-11 w-11"
+      } ${tone}`}
     >
       {children}
     </button>
@@ -1063,7 +1369,7 @@ function CopyIcon() {
 
 function EyeIcon() {
   return (
-    <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+    <svg aria-hidden="true" className="h-5 w-5 sm:h-6 sm:w-6" viewBox="0 0 24 24" fill="none">
       <path
         d="M3 12C5.4 7.9 8.4 6 12 6C15.6 6 18.6 7.9 21 12C18.6 16.1 15.6 18 12 18C8.4 18 5.4 16.1 3 12Z"
         stroke="currentColor"
@@ -1081,7 +1387,7 @@ function EyeIcon() {
 
 function EyeOffIcon() {
   return (
-    <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+    <svg aria-hidden="true" className="h-5 w-5 sm:h-6 sm:w-6" viewBox="0 0 24 24" fill="none">
       <path d="M4 4L20 20" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
       <path
         d="M10.2 6.25C10.78 6.08 11.38 6 12 6C15.6 6 18.6 7.9 21 12C20.22 13.33 19.38 14.43 18.47 15.31"
@@ -1180,21 +1486,6 @@ function PencilIcon() {
         strokeLinejoin="round"
         strokeWidth="1.8"
       />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none">
-      <path d="M4 7H20" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-      <path d="M10 11V17M14 11V17" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-      <path
-        d="M6.5 7L7.4 19C7.48 20.12 8.42 21 9.55 21H14.45C15.58 21 16.52 20.12 16.6 19L17.5 7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path d="M9 7V5C9 3.9 9.9 3 11 3H13C14.1 3 15 3.9 15 5V7" stroke="currentColor" strokeWidth="1.8" />
     </svg>
   );
 }
