@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 
 type Credential = {
   id: string;
@@ -221,6 +221,7 @@ export function VaultApp() {
   const [selectedCategory, setSelectedCategory] = useState("Todas");
   const [query, setQuery] = useState("");
   const [visibleId, setVisibleId] = useState<string | null>(null);
+  const [revealedPasswordId, setRevealedPasswordId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isAccessSheetOpen, setIsAccessSheetOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -250,6 +251,24 @@ export function VaultApp() {
       })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [credentials, query, selectedCategory]);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(""), 3600);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  useEffect(() => {
+    if (!sheetMessage) return;
+    const timer = window.setTimeout(() => setSheetMessage(""), 3600);
+    return () => window.clearTimeout(timer);
+  }, [sheetMessage]);
+
+  useEffect(() => {
+    if (!categoryMessage) return;
+    const timer = window.setTimeout(() => setCategoryMessage(""), 3600);
+    return () => window.clearTimeout(timer);
+  }, [categoryMessage]);
 
   async function persist(
     nextCredentials: Credential[],
@@ -605,6 +624,7 @@ export function VaultApp() {
     setForm(makeEmptyForm(defaultCategories[0], defaultServices[0]));
     setEditingId(null);
     setVisibleId(null);
+    setRevealedPasswordId(null);
     setIsAccessSheetOpen(false);
     setIsSettingsOpen(false);
     setServiceName("");
@@ -621,6 +641,11 @@ export function VaultApp() {
   if (!activeUser) {
     return (
       <main className="min-h-screen bg-background text-foreground">
+        <ToastStack
+          messages={[
+            { id: "message", value: message, onDismiss: () => setMessage("") },
+          ]}
+        />
         <section className="mx-auto flex min-h-screen w-full max-w-md items-center px-4 py-8">
           <div className="w-full">
             <div className="mb-8 flex items-center justify-center gap-3">
@@ -684,11 +709,6 @@ export function VaultApp() {
               >
                 {busy ? "Procesando" : mode === "create" ? "Crear bóveda" : "Desbloquear"}
               </button>
-              {message ? (
-                <DismissibleMessage className="mt-4" onDismiss={() => setMessage("")}>
-                  {message}
-                </DismissibleMessage>
-              ) : null}
             </form>
           </div>
         </section>
@@ -698,6 +718,13 @@ export function VaultApp() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
+      <ToastStack
+        messages={[
+          { id: "message", value: message, onDismiss: () => setMessage("") },
+          { id: "sheet", value: sheetMessage, onDismiss: () => setSheetMessage("") },
+          { id: "catalog", value: categoryMessage, onDismiss: () => setCategoryMessage("") },
+        ]}
+      />
       <header className="sticky top-0 z-40 border-b border-border bg-card/85 backdrop-blur-sm">
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3">
@@ -765,11 +792,6 @@ export function VaultApp() {
           }}
         >
           <form onSubmit={handleSave} className="grid gap-4 px-5 py-5">
-            {sheetMessage ? (
-              <DismissibleMessage onDismiss={() => setSheetMessage("")}>
-                {sheetMessage}
-              </DismissibleMessage>
-            ) : null}
             <label className="block text-sm font-medium text-foreground">
               Servicio
               <select
@@ -957,12 +979,6 @@ export function VaultApp() {
               </div>
             </section>
 
-            {categoryMessage ? (
-              <DismissibleMessage onDismiss={() => setCategoryMessage("")}>
-                {categoryMessage}
-              </DismissibleMessage>
-            ) : null}
-
             <section className="grid gap-3">
               <div>
                 <h3 className="font-semibold text-foreground">Categorías</h3>
@@ -1114,12 +1130,6 @@ export function VaultApp() {
             </div>
           </div>
 
-          {message ? (
-            <DismissibleMessage onDismiss={() => setMessage("")}>
-              {message}
-            </DismissibleMessage>
-          ) : null}
-
           <div className="grid min-w-0 gap-3">
             {filteredCredentials.length ? (
               filteredCredentials.map((credential) => (
@@ -1148,7 +1158,10 @@ export function VaultApp() {
                         title={visibleId === credential.id ? "Ocultar credenciales" : "Ver credenciales"}
                         compact
                         emphasis
-                        onClick={() => setVisibleId(visibleId === credential.id ? null : credential.id)}
+                        onClick={() => {
+                          setVisibleId(visibleId === credential.id ? null : credential.id);
+                          setRevealedPasswordId(null);
+                        }}
                       >
                         {visibleId === credential.id ? <EyeOffIcon /> : <EyeIcon />}
                       </IconButton>
@@ -1187,9 +1200,29 @@ export function VaultApp() {
                             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                               Contraseña
                             </p>
-                            <p className="mt-1 break-all font-mono text-sm text-foreground">
-                              {credential.password}
-                            </p>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRevealedPasswordId(
+                                  revealedPasswordId === credential.id ? null : credential.id,
+                                )
+                              }
+                              className="mt-1 max-w-full break-all text-left font-mono text-sm text-foreground transition hover:text-accent"
+                              aria-label={
+                                revealedPasswordId === credential.id
+                                  ? "Ocultar contraseña"
+                                  : "Mostrar contraseña"
+                              }
+                              title={
+                                revealedPasswordId === credential.id
+                                  ? "Ocultar contraseña"
+                                  : "Mostrar contraseña"
+                              }
+                            >
+                              {revealedPasswordId === credential.id
+                                ? credential.password
+                                : "*".repeat(Math.max(credential.password.length, 8))}
+                            </button>
                           </div>
                           <button
                             type="button"
@@ -1282,31 +1315,58 @@ function InputField({
   );
 }
 
-function DismissibleMessage({
-  children,
-  className = "",
-  onDismiss,
+function ToastStack({
+  messages,
 }: {
-  children: ReactNode;
-  className?: string;
-  onDismiss: () => void;
+  messages: Array<{ id: string; value: string; onDismiss: () => void }>;
 }) {
+  const visibleMessages = messages.filter((message) => message.value);
+
+  if (!visibleMessages.length) return null;
+
   return (
-    <div
-      className={`flex items-start justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground ${className}`}
-    >
-      <p className="min-w-0 leading-6">{children}</p>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition hover:bg-card hover:text-foreground"
-        aria-label="Cerrar mensaje"
-        title="Cerrar mensaje"
-      >
-        <XIcon />
-      </button>
+    <div className="fixed left-1/2 top-4 z-[80] grid w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 gap-2">
+      {visibleMessages.map((message) => {
+        const isError = isErrorToast(message.value);
+        const tone = isError
+          ? "border-red-200 bg-red-50 text-red-700"
+          : "border-emerald-200 bg-emerald-50 text-emerald-700";
+
+        return (
+          <div
+            key={message.id}
+            className={`flex items-start justify-between gap-3 rounded-md border px-3 py-2 text-sm shadow-lg ${tone}`}
+            role="status"
+          >
+            <p className="min-w-0 leading-6">{message.value}</p>
+            <button
+              type="button"
+              onClick={message.onDismiss}
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition hover:bg-white/70"
+              aria-label="Cerrar mensaje"
+              title="Cerrar mensaje"
+            >
+              <XIcon />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
+}
+
+function isErrorToast(value: string) {
+  const normalized = value.toLowerCase();
+  return [
+    "no ",
+    "no pude",
+    "no encontré",
+    "ingresa",
+    "completa",
+    "revisa",
+    "ya existe",
+    "debe existir",
+  ].some((pattern) => normalized.includes(pattern));
 }
 
 function IconButton({
